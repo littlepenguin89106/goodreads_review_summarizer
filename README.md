@@ -42,3 +42,4 @@ Refer to `books.txt` for an example.
 - [ ] backend service
 - [ ] Optimize summary method
 - [ ] Support other model API
+- [ ] Change to asynchronous requests to improve speed
