@@ -1,15 +1,17 @@
-import requests
+import httpx
 from bs4 import BeautifulSoup
 import pandas as pd
-from playwright.sync_api import sync_playwright
+from playwright.async_api import async_playwright
 from argparse import ArgumentParser
 from llm import OllamaClient
 from prompt import FILTER_PROMPT, SUMMARY_PROMPT, TRANSLATE_PROMPT, DIGESGT_PROMPT
 import os
 from tqdm import tqdm
+from tqdm.asyncio import tqdm_asyncio
 import logging
-from utils import save_request, save_text, save_df, save_json
+from utils import *
 import time
+import asyncio
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -43,34 +45,45 @@ def parse_review_response(response):
     return review_list
 
 
-def get_reviews(args, request, rating):
+def get_reviews(args, request, rating, interval=2):
+    if args.use_tmp:
+        try:
+            review_df = load_df(os.path.join(args.book_dir, f"reviews_{rating}.csv"))
+        except:
+            logger.warning(f"Failed to load tmp files of get_reviews, reprocessing for rating: {rating}")
+        else:
+            return review_df
+
     logger.info(f"Getting reviews for rating: {rating}")
     payload = request.post_data_json
     payload["variables"]["filters"]["ratingMax"] = rating
     payload["variables"]["filters"]["ratingMin"] = rating
-    payload["variables"]["pagination"]["limit"] = args.num_request_chunk
+    payload["variables"]["pagination"]["limit"] = args.reviews_per_chunk
 
     total_review_list = []
     review_count = 0
-    while review_count < args.max_request_limit:
-        response = requests.post(request.url, json=payload, headers=request.headers)
-        data = response.json()
-        review_list = parse_review_response(data)
-        total_review_list.extend(review_list)
-        review_count += len(review_list)
+    # To avoid sending a large number of unofficial API requests, only synchronous requests are used here.
+    with httpx.Client() as http_client:
+        while review_count < args.max_reviews:
+            response = http_client.post(
+                request.url, json=payload, headers=request.headers
+            )
+            data = response.json()
+            review_list = parse_review_response(data)
+            total_review_list.extend(review_list)
+            review_count += len(review_list)
 
-        nextPageToken = data["data"]["getReviews"]["pageInfo"]["nextPageToken"]
-        if not nextPageToken:
-            break
-        payload["variables"]["pagination"]["after"] = nextPageToken
-        time.sleep(3)
+            nextPageToken = data["data"]["getReviews"]["pageInfo"]["nextPageToken"]
+            if not nextPageToken:
+                break
+            payload["variables"]["pagination"]["after"] = nextPageToken
+            time.sleep(interval)
 
     review_df = pd.DataFrame(total_review_list)
 
     if args.save_tmp:
         save_df(review_df, os.path.join(args.book_dir, f"reviews_{rating}.csv"))
     return review_df
-
 
 class ReviewRequestInterceptor:
     def __init__(self):
@@ -89,28 +102,37 @@ class ReviewRequestInterceptor:
             self.review_request = request
 
 
-def get_page(args, book_page):
+async def get_page(args, book_page):
+    if args.use_tmp:
+        try:
+            book_info = load_json(os.path.join(args.book_dir, "book_info.json"))
+            review_request = load_request(os.path.join(args.book_dir, "review_request.json"))
+        except:
+            logger.warning("Failed to load tmp files of get_page, reprocessing")
+        else:
+            return book_info, review_request
+
     logger.info(f"Getting book information")
     url = f"https://www.goodreads.com/book/show/{book_page}"
     request_interceptor = ReviewRequestInterceptor()
 
     book_info = {}
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
-        page = context.new_page()
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context()
+        page = await context.new_page()
         context.on("request", request_interceptor.handle_request)
-        page.goto(url)
+        await page.goto(url)
 
         title_selector = "div.BookPageTitleSection__title h1.Text.Text__title1"
-        page.wait_for_selector(title_selector, timeout=10000)
-        book_info["title"] = page.locator(title_selector).text_content()
+        await page.wait_for_selector(title_selector, timeout=10000)
+        book_info["title"] = await page.locator(title_selector).text_content()
 
         summary_selector = "div.BookPageMetadataSection__description span.Formatted"
-        page.wait_for_selector(summary_selector, timeout=10000)
-        book_info["description"] = page.locator(summary_selector).text_content()
+        await page.wait_for_selector(summary_selector, timeout=10000)
+        book_info["description"] = await page.locator(summary_selector).text_content()
 
-        browser.close()
+        await browser.close()
 
     review_request = request_interceptor.review_request
     if args.save_tmp:
@@ -119,20 +141,30 @@ def get_page(args, book_page):
 
     return book_info, review_request
 
+async def async_map_with_tqdm(func, iterable, desc=''):
+    return await tqdm_asyncio.gather(*(func(item) for item in iterable),desc=desc)
 
-def filter_reviews(args, client, book_info, review_df, rating):
-    filtered_reviews = []
-    logger.info("Filtering reviews...")
-    for review in tqdm(review_df.itertuples(), "Reviews"):
+async def filter_reviews(args, model_client, book_info, review_df, rating):
+    async def filter_single_review(review):
         prompt = FILTER_PROMPT.format(
             book_description=book_info["description"], book_review=review.review
         )
-        response = client.generate(prompt)
+        response = await model_client.chat(prompt)
 
-        if "yes" in response.lower():
-            filtered_reviews.append(review)
+        return review if 'yes' in response.lower() else None
 
-    filter_review_df = pd.DataFrame(filtered_reviews)
+    if args.use_tmp:
+        try:
+            filter_review_df = load_df(os.path.join(args.book_dir, f"filtered_{rating}.csv"))
+        except:
+            logger.warning(f"Failed to load tmp files of filter_reviews, reprocessing for rating: {rating}")
+        else:
+            return filter_review_df
+
+    logger.info("Filtering reviews...")
+    results = await async_map_with_tqdm(filter_single_review, review_df.itertuples(), "Reviews")
+
+    filter_review_df = pd.DataFrame(filter(None, results))
     if args.save_tmp:
         save_df(
             filter_review_df,
@@ -140,18 +172,26 @@ def filter_reviews(args, client, book_info, review_df, rating):
         )
     return filter_review_df
 
-
-def digest_reviews(args, client, book_info, review_df, rating):
-    logger.info("Digesting reviews...")
-    digested_list = []
-    for review in tqdm(review_df.itertuples()):
+async def digest_reviews(args, model_client, book_info, review_df, rating):
+    async def digest_single_review(review):
         prompt = DIGESGT_PROMPT.format(
             book_title=book_info["title"],
             book_description=book_info["description"],
             review=review.review,
         )
-        digest = client.generate(prompt)
-        digested_list.append(digest)
+        digest = await model_client.chat(prompt)
+        return digest
+
+    if args.use_tmp:
+        try:
+            digested_list = load_json(os.path.join(args.book_dir, f"digested_{rating}.json"))
+        except:
+            logger.warning(f"Failed to load tmp files of digest_reviews, reprocessing for rating: {rating}")
+        else:
+            return digested_list
+
+    logger.info("Digesting reviews...")
+    digested_list = await async_map_with_tqdm(digest_single_review, review_df.itertuples(), "Digests")
 
     if args.save_tmp:
         save_json(
@@ -161,7 +201,16 @@ def digest_reviews(args, client, book_info, review_df, rating):
     return digested_list
 
 
-def generate_summary(args, client, book_info, review_list, rating):
+async def generate_summary(args, model_client, book_info, review_list, rating):
+    if args.use_tmp:
+        try:
+            response = load_text(os.path.join(args.book_dir, f"summary_{rating}.txt"))
+        except:
+            logger.warning(f"Failed to load tmp files of generate_summary, reprocessing for rating: {rating}")
+        
+        else:
+            return response
+
     logger.info("Generating summary...")
     review_str = ""
     for idx, review in enumerate(review_list, 1):
@@ -172,25 +221,33 @@ def generate_summary(args, client, book_info, review_list, rating):
         book_description=book_info["description"],
         reviews=review_str,
     )
-    response = client.generate(prompt)
+    response = await model_client.chat(prompt)
     if args.save_tmp:
         save_text(response, os.path.join(args.book_dir, f"summary_{rating}.txt"))
     return response
 
 
-def translate_summary(args, client, summary, rating):
+async def translate_summary(args, model_client, summary, rating):
+    if args.use_tmp:
+        try:
+            tranlated = load_text(os.path.join(args.book_dir, f"translated_{rating}.txt"))
+        except:
+            logger.warning(f"Failed to load tmp files of translate_summary, reprocessing for rating: {rating}")
+        else:
+            return tranlated
+
     logger.info("Translating summary...")
     if args.language == DEFAULT_LANGUAGE:
         return summary
     else:
-        prompt = TRANSLATE_PROMPT.format(language=args.language, review_summary=summary)
-        tranlated = client.generate(prompt)
+        prompt = TRANSLATE_PROMPT.format(language=args.language, book_summary=summary)
+        tranlated = await model_client.chat(prompt)
         if args.save_tmp:
             save_text(
                 tranlated,
                 os.path.join(args.book_dir, f"translated_{rating}.txt"),
             )
-        return tranlated
+    return tranlated
 
 
 def make_dir_if_not_exists(dir_path):
@@ -198,32 +255,34 @@ def make_dir_if_not_exists(dir_path):
         os.makedirs(dir_path)
 
 
-def main(args):
+async def main(args):
 
     with open(args.books, "r") as f:
-        book_list = f.read().splitlines()
+        book_pages = f.read().splitlines()
 
-    client = OllamaClient(model=args.model_name)
-    for book_page in tqdm(book_list, desc="Books"):
-        logging.info(f"Processing book: {book_page}")
-        args.book_dir = os.path.join(args.output_dir, book_page)
+    model_client = OllamaClient(model=args.model, max_requests=args.max_llm_requests)
+    for page in tqdm(book_pages, desc="Books"):
+        logging.info(f"Processing book: {page}")
+        args.book_dir = os.path.join(args.output_dir, page)
         make_dir_if_not_exists(args.book_dir)
 
-        book_info, review_request = get_page(args, book_page)
+        book_info, review_request = await get_page(args, page)
         if review_request:
             for rating in range(5, 0, -1):
                 review_df = get_reviews(args, review_request, rating)
-                filtered_reviews = filter_reviews(
-                    args, client, book_info, review_df, rating
+                filtered_reviews = await filter_reviews(
+                    args, model_client, book_info, review_df, rating
                 )
                 if len(filtered_reviews):
-                    digested_reviews = digest_reviews(
-                        args, client, book_info, filtered_reviews, rating
+                    digested_reviews = await digest_reviews(
+                        args, model_client, book_info, filtered_reviews, rating
                     )
-                    summary = generate_summary(
-                        args, client, book_info, digested_reviews, rating
+                    summary = await generate_summary(
+                        args, model_client, book_info, digested_reviews, rating
                     )
-                    tranlated_summary = translate_summary(args, client, summary, rating)
+                    tranlated_summary = await translate_summary(
+                        args, model_client, summary, rating
+                    )
                     save_text(
                         tranlated_summary,
                         os.path.join(args.book_dir, f"result_{rating}.txt"),
@@ -245,19 +304,25 @@ if __name__ == "__main__":
         help="Path to the file containing the list of book pages",
     )
     parser.add_argument(
-        "--num_request_chunk",
+        "--reviews_per_chunk",
         type=int,
         default=100,
         help="Number of reviews to request per chunk.",
     )
     parser.add_argument(
-        "--max_request_limit",
+        "--max_reviews",
         type=int,
         default=100,
         help="Maximum number of reviews to scrape per book for each star rating.",
     )
     parser.add_argument(
-        "--model_name", type=str, default="llama3.2", help="Processing model name"
+        "--max_llm_requests",
+        type=int,
+        default=1,
+        help="Maximum number of requests to send to the LLM model at once",
+    )
+    parser.add_argument(
+        "--model", type=str, default="llama3.2", help="Processing model"
     )
     parser.add_argument(
         "--language", type=str, default=DEFAULT_LANGUAGE, help="Output language"
@@ -271,6 +336,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--save_tmp", default=False, action="store_true", help="Save intermediate data"
     )
+    parser.add_argument("--use_tmp", default=False, action="store_true", help="Use intermediate data")
     args = parser.parse_args()
     logger = logging.getLogger()
-    main(args)
+    asyncio.run(main(args))

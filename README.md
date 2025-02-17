@@ -38,8 +38,8 @@ Refer to `books.txt` for an example.
 
 ## Planned Features
 
-- [ ] frontend design
-- [ ] backend service
+- [ ] Frontend design
+- [ ] Backend service
 - [ ] Optimize summary method
 - [ ] Support other model API
-- [ ] Change to asynchronous requests to improve speed
+- [x] Change to asynchronous requests to improve speed
