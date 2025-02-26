@@ -8,28 +8,44 @@ Goodreads Review Summarizer is a tool to collect and summarize book reviews from
 
 - Scrapes and summarizes book reviews from Goodreads
 - Output the structured summaries by AI to help users make informed reading choices
+- Support running LLMs locally or calling online APIs.
 
 ## Installation
 
 1. Ensure you have Python3 installed. This project was developed using Python 3.10.
 2. Run `pip install -r requirements.txt`
 3. Run `playwright install` for installing playwright dependencies.
-4. Install and run [Ollama](https://ollama.com/). Pull a suitable model.
+4. Choose one of [Supported APIs](#supported-apis) you prefer.
+
+## Supported APIs
+
+### Ollama
+1. Install and run [Ollama](https://ollama.com/) service.
+2. Pull the `llama3.2` model.
+
+### OpenAI-Compatible
+You can configure the settings for any OpenAI API-compatible service. 
+For example, see `configs/clients/groq.yaml` for Groq.
+
+1. Get an [API key](https://console.groq.com/keys).
+2. Create a `.env` file in the project's root directory and add: `GROQ_API_KEY="My API Key"`.
 
 ## Usage
 
 1. Browse the Goodreads page of the book you're interested in and note its identifier.
 
-For example, the Goodreads page for *Atomic Habits* is:
-https://www.goodreads.com/book/show/40121378-atomic-habits
+    For example, the Goodreads page for *Atomic Habits* is:
+    https://www.goodreads.com/book/show/40121378-atomic-habits
 
-In this case, `40121378-atomic-habits` is the identifier you need.
+    In this case, `40121378-atomic-habits` is the identifier you need.
 
 2. Copy and paste the book identifier into a text file. This tool supports multiple books, so you can enter multiple identifiers, each on a new line.
 
-Refer to `books.txt` for an example.
+    Refer to `books.txt` for an example.
 
-3. Execute `python main.py --books books.txt`, replace `books.txt` with your list of book IDs. For other settings, run `python main.py --help` for more details.
+3. Adjust `configs/main.yaml`. For more detail, please read the comments in the configurations.
+
+4. Execute `python main.py`.
 
 ## Notices
 
@@ -41,5 +57,5 @@ Refer to `books.txt` for an example.
 - [ ] Frontend design
 - [ ] Backend service
 - [ ] Optimize summary method
-- [ ] Support other model API
+- [x] Support other model API
 - [x] Change to asynchronous requests to improve speed

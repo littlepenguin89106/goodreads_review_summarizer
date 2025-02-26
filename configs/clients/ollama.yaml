@@ -1,0 +1,10 @@
+client_type: ollama
+host: null
+# the maximum number of concurrent requests to the API
+max_concurrency: 1
+# see: https://github.com/ollama/ollama/blob/main/docs/api.md for more detail
+params:
+  model: llama3.2
+  options:
+    num_ctx: 32768
+    max_tokens: 4096
