@@ -1,0 +1,23 @@
+client_type: openai
+# The base URL of the API
+base_url: http://localhost:11434/v1
+# get your api key from the environment variable OPENAI_API_KEY
+api_key: ${oc.env:OPENAI_API_KEY}
+# the maximum number of concurrent requests to the API
+max_concurrency: 1
+# number of reviews processed per request for embedding during clustering
+embed_batch_size: 8
+# For `api_params`, see: https://github.com/ollama/ollama/blob/main/docs/openai.md for more detail
+llm:
+  api_params:
+    model: qwen3:0.6b
+    max_tokens: 4096
+  # For reasoning models, the OpenAI API doesn’t separate thinking content.
+  # Use think_start_tag and think_end_tag to mark and filter it.
+  # For standard LLMs, set both to `null` or remove them entirely.
+  think_start_tag: <think>
+  think_end_tag: </think>
+embed:
+  api_params:
+    model: qwen3_embed:0.6b
+  

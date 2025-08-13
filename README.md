@@ -7,7 +7,8 @@ Goodreads Review Summarizer is a tool to collect and summarize book reviews from
 ## Features
 
 - Scrapes and summarizes book reviews from Goodreads
-- Output the structured summaries by AI to help users make informed reading choices
+- Output the structured summaries by LLM to help users make informed reading choices
+- Clustering and Visualize the reviews per rating. See [Clustering](#clustering).
 - Support running LLMs locally or calling online APIs.
 
 ## Installation
@@ -20,15 +21,17 @@ Goodreads Review Summarizer is a tool to collect and summarize book reviews from
 ## Supported APIs
 
 ### Ollama
-1. Install and run [Ollama](https://ollama.com/) service.
-2. Pull the `llama3.2` model.
+1. Install and run [Ollama](https://ollama.com/), and make sure it keeps running in the background.
+2. Run `ollama pull qwen3:0.6b`
+3. (Optional) To use clustering:
+    - download [Qwen3-Embedding](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf?download=true) save in `./models`. 
+    - In `./models`, run `ollama create qwen3_embed:0.6b -f Modelfile`
 
 ### OpenAI-Compatible
 You can configure the settings for any OpenAI API-compatible service. 
-For example, see `configs/clients/groq.yaml` for Groq.
+For example, see `configs/clients/openai.yaml`, which uses OpenAI API to connect Ollama.
 
-1. Get an [API key](https://console.groq.com/keys).
-2. Create a `.env` file in the project's root directory and add: `GROQ_API_KEY="My API Key"`.
+You can use dotenv to manage environment variables. Create a `.env` file in the project’s root directory and add your API key, for example: `OPENAI_API_KEY="your_api_key"`. The program will load these settings.
 
 ## Usage
 
@@ -46,6 +49,14 @@ For example, see `configs/clients/groq.yaml` for Groq.
 3. Adjust `configs/main.yaml`. For more detail, please read the comments in the configurations.
 
 4. Execute `python main.py`.
+5. The results will be saved in the `output/` by default.
+
+## Clustering
+- Enable clustering by setting `clustering: true` in `configs/main.yaml`.
+- Reviews are processed by generating text embeddings, reducing their dimensions with PCA, and clustering them using HDBSCAN.
+- For each cluster, the program generates a summary, followed by an overall summary across all clusters. 
+- Reviews without cluster labels are grouped and summarized separately.
+- Enable visualizing by setting `viz_clusters: true` in `configs/main.yaml`. It uses UMAP for visualization.
 
 ## Notices
 
@@ -56,6 +67,6 @@ For example, see `configs/clients/groq.yaml` for Groq.
 
 - [ ] Frontend design
 - [ ] Backend service
-- [ ] Optimize summary method
+- [x] Improve summary method
 - [x] Support other model API
 - [x] Change to asynchronous requests to improve speed

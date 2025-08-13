@@ -2,9 +2,16 @@ client_type: ollama
 host: null
 # the maximum number of concurrent requests to the API
 max_concurrency: 1
-# see: https://github.com/ollama/ollama/blob/main/docs/api.md for more detail
-params:
-  model: llama3.2
-  options:
-    num_ctx: 32768
-    max_tokens: 4096
+# number of reviews processed per request for embedding during clustering
+embed_batch_size: 8
+# For `api_params`, see: https://github.com/ollama/ollama/blob/main/docs/api.md for more detail
+llm:
+  api_params:
+    model: qwen3:0.6b
+    think: true
+    options:
+      num_ctx: 32768
+      num_predict: 4096
+embed:
+  api_params:
+    model: qwen3_embed:0.6b
