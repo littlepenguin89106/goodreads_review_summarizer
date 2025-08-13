@@ -1,7 +1,7 @@
 # Path to the file containing the list of book pages
 books: books.txt
-# config filename in configs/clients
-client_cfg: groq.yaml
+# client config in configs/clients
+client: ollama.yaml
 # Number of reviews to request per chunk
 reviews_per_chunk: 100
 # Maximum number of reviews to scrape per book for each star rating
@@ -16,3 +16,22 @@ output_dir: ./output
 save_tmp: false
 # Use intermediate data
 use_tmp: false
+# Use HDBSCAN algorithm to cluster reviews before summarizing
+clustering: false
+# When enable clustering, visualize and save the plot
+viz_clusters: false
+# random seed
+seed: 0
+# use for dimensionality reduction during clustering
+pca:
+  n_components: 50
+# use for clustering
+hdbscan:
+  min_cluster_size: 10
+  min_samples: 5
+  metric: cosine
+# use for visualizing clusters
+umap:
+  metric: cosine
+  n_neighbors: 10
+  min_dist: 0.1

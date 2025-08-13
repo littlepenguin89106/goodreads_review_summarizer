@@ -75,7 +75,7 @@ Your task:
 **Output:**
 """
 
-DIGESGT_PROMPT = """
+DIGEST_PROMPT = """
 You are summarizing a book review based on the book description. The summary should retain the key points while removing unnecessary details.  
 
 You will be given:  
