@@ -3,7 +3,7 @@ from bs4 import BeautifulSoup
 import pandas as pd
 from playwright.async_api import async_playwright
 from llm_client import build_llm_client
-from prompt import FILTER_PROMPT, TRANSLATE_PROMPT, DIGESGT_PROMPT
+from prompt import FILTER_PROMPT, TRANSLATE_PROMPT, DIGEST_PROMPT
 import os
 from tqdm import tqdm
 from utils import *
@@ -49,9 +49,7 @@ def get_reviews(cfg, request, rating):
         try:
             review_df = load_df(os.path.join(cfg.rating_tmp_dir, f"reviews.csv"))
         except:
-            logger.warning(
-                f"Failed to load tmp files of get_reviews, reprocessing."
-            )
+            logger.warning(f"Failed to load tmp files of get_reviews, reprocessing.")
         else:
             return review_df
 
@@ -162,9 +160,7 @@ async def filter_reviews(cfg, llm_client, book_info, review_df):
                 os.path.join(cfg.rating_tmp_dir, f"filtered.csv")
             )
         except:
-            logger.warning(
-                f"Failed to load tmp files of filter_reviews, reprocessing."
-            )
+            logger.warning(f"Failed to load tmp files of filter_reviews, reprocessing.")
         else:
             return filter_review_df
 
@@ -184,7 +180,7 @@ async def filter_reviews(cfg, llm_client, book_info, review_df):
 
 async def digest_reviews(cfg, llm_client, book_info, review_df):
     async def digest_single_review(review):
-        prompt = DIGESGT_PROMPT.format(
+        prompt = DIGEST_PROMPT.format(
             book_title=book_info["title"],
             book_description=book_info["description"],
             review=review.review,
@@ -198,9 +194,7 @@ async def digest_reviews(cfg, llm_client, book_info, review_df):
                 os.path.join(cfg.rating_tmp_dir, f"digested.json")
             )
         except:
-            logger.warning(
-                f"Failed to load tmp files of digest_reviews, reprocessing."
-            )
+            logger.warning(f"Failed to load tmp files of digest_reviews, reprocessing.")
         else:
             return digested_list
 
@@ -232,21 +226,23 @@ async def generate_summary(cfg, llm_client, book_info, review_list):
     logger.info("Generating summary...")
 
     if cfg.clustering:
-        cluster_labels = await cluster_reviews(cfg,llm_client,review_list)
+        cluster_labels = await cluster_reviews(cfg, llm_client, review_list)
         clusters = defaultdict(list)
         for review, label in zip(review_list, cluster_labels):
             clusters[label].append(review)
         clusters = dict(sorted(clusters.items(), key=lambda x: x[0]))
-        
-        sum_func = partial(summarize_group,llm_client,book_info)
-        cluster_summaries = await async_map_with_tqdm(sum_func,clusters.values(),'Generating group summary')
+
+        sum_func = partial(summarize_group, llm_client, book_info)
+        cluster_summaries = await async_map_with_tqdm(
+            sum_func, clusters.values(), "Generating group summary"
+        )
         total_summary = await sum_func(cluster_summaries)
-        summary = '\n'.join(f'Group {i}: {s}' for i,s in enumerate(cluster_summaries))
-        summary += f'Total summary: {total_summary}'
+        summary = "\n".join(f"Group {i}: {s}" for i, s in enumerate(cluster_summaries))
+        summary += f"Total summary: {total_summary}"
 
     else:
-        summary = await summarize_group(llm_client,book_info,review_list)
-        
+        summary = await summarize_group(llm_client, book_info, review_list)
+
     if cfg.save_tmp:
         save_text(summary, os.path.join(cfg.rating_tmp_dir, f"summary.txt"))
     return summary
@@ -288,19 +284,19 @@ async def main(cfg):
         cfg.book_dir = os.path.join(cfg.output_dir, page)
         make_dir_if_not_exists(cfg.book_dir)
         if cfg.save_tmp:
-            cfg.tmp_dir = os.path.join(cfg.book_dir, 'tmp')
+            cfg.tmp_dir = os.path.join(cfg.book_dir, "tmp")
             make_dir_if_not_exists(cfg.tmp_dir)
 
         book_info, review_request = await get_page(cfg, page)
         if review_request:
             for rating in range(5, 0, -1):
-                cfg.rating_dir = os.path.join(cfg.book_dir, f'rating_{rating}')
+                cfg.rating_dir = os.path.join(cfg.book_dir, f"rating_{rating}")
                 make_dir_if_not_exists(cfg.rating_dir)
                 if cfg.save_tmp:
-                    cfg.rating_tmp_dir = os.path.join(cfg.tmp_dir, f'rating_{rating}')
+                    cfg.rating_tmp_dir = os.path.join(cfg.tmp_dir, f"rating_{rating}")
                     make_dir_if_not_exists(cfg.rating_tmp_dir)
 
-                logger.info(f"Processing rating: {rating}")     
+                logger.info(f"Processing rating: {rating}")
                 review_df = get_reviews(cfg, review_request, rating)
                 filtered_reviews = await filter_reviews(
                     cfg, llm_client, book_info, review_df
@@ -330,7 +326,7 @@ async def main(cfg):
 def parse_config():
     load_dotenv()
     cfg = OmegaConf.load("configs/main.yaml")
-    client_cfg = OmegaConf.load(os.path.join(f'configs/clients/{cfg.client}'))
+    client_cfg = OmegaConf.load(os.path.join(f"configs/clients/{cfg.client}"))
     cfg.client = client_cfg
 
     return cfg
