@@ -20,7 +20,6 @@ class BaseClient:
         self.client = client
         self.cfg = cfg
         self.max_concurrency = cfg.get("max_concurrency", 1)
-        logger.info(f"max concurrency: {self.max_concurrency}")
         self.semaphore = asyncio.Semaphore(self.max_concurrency)
 
     async def chat(self, prompt):

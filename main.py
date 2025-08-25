@@ -1,154 +1,18 @@
-import httpx
-from bs4 import BeautifulSoup
 import pandas as pd
-from playwright.async_api import async_playwright
 from llm_client import build_llm_client
 from prompt import FILTER_PROMPT, TRANSLATE_PROMPT, DIGEST_PROMPT
 import os
 from tqdm import tqdm
 from utils import *
-import time
+from book_platform import get_platform
 import asyncio
 from dotenv import load_dotenv
 from omegaconf import OmegaConf
 from collections import defaultdict
 from functools import partial
-import copy
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 DEFAULT_LANGUAGE = "English"
-
-
-# from: https://stackoverflow.com/a/79037206
-def parse_review_response(response):
-    data = response["data"]["getReviews"]["edges"]
-    review_list = []
-    for d in data:
-        try:
-            review_list.append(
-                {
-                    "id_user": d["node"]["creator"]["id"],
-                    "is_author": d["node"]["creator"]["isAuthor"],
-                    "follower_count": d["node"]["creator"]["followersCount"],
-                    "name": d["node"]["creator"]["name"],
-                    "review": BeautifulSoup(d["node"]["text"], "lxml").get_text(
-                        separator="\n"
-                    ),
-                    "review_create_date": d["node"]["createdAt"],
-                    "review_liked": d["node"]["likeCount"],
-                    "rating": d["node"]["rating"],
-                }
-            )
-        except:
-            logger.error("fail to extract request data")
-            logger.error(d)
-
-    return review_list
-
-
-def get_reviews(cfg, request, rating):
-    if cfg.use_tmp:
-        try:
-            review_df = load_df(os.path.join(cfg.rating_tmp_dir, f"reviews.csv"))
-        except:
-            logger.warning(f"Failed to load tmp files of get_reviews, reprocessing.")
-        else:
-            return review_df
-
-    logger.info(f"Getting reviews...")
-    payload = copy.deepcopy(request.post_data_json)
-    payload["variables"]["filters"]["ratingMax"] = rating
-    payload["variables"]["filters"]["ratingMin"] = rating
-    payload["variables"]["pagination"]["limit"] = cfg.reviews_per_chunk
-
-    total_review_list = []
-    review_count = 0
-    # To avoid sending a large number of unofficial API requests, only synchronous requests are used here.
-    with httpx.Client() as http_client:
-        while review_count < cfg.max_reviews:
-            response = http_client.post(
-                request.url, json=payload, headers=request.headers
-            )
-            data = response.json()
-            review_list = parse_review_response(data)
-            remaining = cfg.max_reviews - review_count
-
-            total_review_list.extend(review_list[:remaining])
-            review_count += min(len(review_list), remaining)
-
-            if review_count >= cfg.max_reviews:
-                break
-
-            nextPageToken = data["data"]["getReviews"]["pageInfo"]["nextPageToken"]
-            if not nextPageToken:
-                break
-            payload["variables"]["pagination"]["after"] = nextPageToken
-            time.sleep(cfg.interval)
-
-    review_df = pd.DataFrame(total_review_list)
-
-    if cfg.save_tmp:
-        save_df(review_df, os.path.join(cfg.rating_tmp_dir, f"reviews.csv"))
-    return review_df
-
-
-class ReviewRequestInterceptor:
-    def __init__(self):
-        self.review_request = None
-
-    def handle_request(self, request):
-        if "graphql" not in request.url or request.method != "POST":
-            return
-
-        post_data = request.post_data_json
-        if (
-            post_data
-            and "operationName" in post_data
-            and post_data["operationName"] == "getReviews"
-        ):
-            self.review_request = request
-
-
-async def get_page(cfg, book_page):
-    if cfg.use_tmp:
-        try:
-            book_info = load_json(os.path.join(cfg.tmp_dir, "book_info.json"))
-            review_request = load_request(
-                os.path.join(cfg.tmp_dir, "review_request.json")
-            )
-        except:
-            logger.warning(f"Failed to load tmp files of get_page, reprocessing.")
-        else:
-            return book_info, review_request
-
-    logger.info(f"Getting book information")
-    url = f"https://www.goodreads.com/book/show/{book_page}"
-    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36"
-    request_interceptor = ReviewRequestInterceptor()
-
-    book_info = {}
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(user_agent=ua)
-        page = await context.new_page()
-        context.on("request", request_interceptor.handle_request)
-        await page.goto(url)
-
-        title_selector = "div.BookPageTitleSection__title h1.Text.Text__title1"
-        await page.wait_for_selector(title_selector, timeout=10000)
-        book_info["title"] = await page.locator(title_selector).text_content()
-
-        summary_selector = "div.BookPageMetadataSection__description span.Formatted"
-        await page.wait_for_selector(summary_selector, timeout=10000)
-        book_info["description"] = await page.locator(summary_selector).text_content()
-
-        await browser.close()
-
-    review_request = request_interceptor.review_request
-    if cfg.save_tmp:
-        save_json(book_info, os.path.join(cfg.tmp_dir, "book_info.json"))
-        save_request(review_request, os.path.join(cfg.tmp_dir, "review_request.json"))
-
-    return book_info, review_request
 
 
 async def filter_reviews(cfg, llm_client, book_info, review_df):
@@ -160,28 +24,17 @@ async def filter_reviews(cfg, llm_client, book_info, review_df):
 
         return review if "yes" in response.lower() else None
 
-    if cfg.use_tmp:
-        try:
-            filter_review_df = load_df(
-                os.path.join(cfg.rating_tmp_dir, f"filtered.csv")
-            )
-        except:
-            logger.warning(f"Failed to load tmp files of filter_reviews, reprocessing.")
-        else:
-            return filter_review_df
+    async def compute():
+        logger.info("Filtering reviews...")
 
-    logger.info("Filtering reviews...")
-    results = await async_map_with_tqdm(
-        filter_single_review, review_df.itertuples(), "Filter"
-    )
-
-    filter_review_df = pd.DataFrame(filter(None, results))
-    if cfg.save_tmp:
-        save_df(
-            filter_review_df,
-            os.path.join(cfg.rating_tmp_dir, f"filtered.csv"),
+        results = await async_map_with_tqdm(
+            filter_single_review, review_df.itertuples(), "Filter"
         )
-    return filter_review_df
+        return pd.DataFrame(filter(None, results))
+
+    cache_path = os.path.join(cfg.tmp_dir, "filtered.csv")
+
+    return await async_use_cache_or_compute(cfg, cache_path, load_df, compute, save_df)
 
 
 async def digest_reviews(cfg, llm_client, book_info, review_df):
@@ -194,138 +47,131 @@ async def digest_reviews(cfg, llm_client, book_info, review_df):
         digest = await llm_client.chat(prompt)
         return digest
 
-    if cfg.use_tmp:
-        try:
-            digested_list = load_json(
-                os.path.join(cfg.rating_tmp_dir, f"digested.json")
-            )
-        except:
-            logger.warning(f"Failed to load tmp files of digest_reviews, reprocessing.")
-        else:
-            return digested_list
+    async def compute():
+        logger.info("Digesting reviews...")
 
-    logger.info("Digesting reviews...")
-    digested_list = await async_map_with_tqdm(
-        digest_single_review, review_df.itertuples(), "Digest"
-    )
-
-    if cfg.save_tmp:
-        save_json(
-            digested_list,
-            os.path.join(cfg.rating_tmp_dir, f"digested.json"),
+        digested_list = await async_map_with_tqdm(
+            digest_single_review, review_df.itertuples(), "Digest"
         )
-    return digested_list
+        digested_df = review_df.copy()
+        digested_df["review"] = digested_list
+        return digested_df
+
+    cache_path = os.path.join(cfg.tmp_dir, "digested.csv")
+    return await async_use_cache_or_compute(cfg, cache_path, load_df, compute, save_df)
 
 
 async def generate_summary(cfg, llm_client, book_info, review_list):
-    if cfg.use_tmp:
-        try:
-            summary = load_text(os.path.join(cfg.rating_tmp_dir, f"summary.txt"))
-        except:
-            logger.warning(
-                f"Failed to load tmp files of generate_summary, reprocessing."
+    async def compute():
+        logger.info("Generating summary...")
+
+        if cfg.clustering:
+            cluster_labels = await cluster_reviews(cfg, llm_client, review_list)
+            clusters = defaultdict(list)
+            for review, label in zip(review_list, cluster_labels):
+                clusters[label].append(review)
+            clusters = dict(sorted(clusters.items(), key=lambda x: x[0]))
+
+            sum_func = partial(summarize_group, llm_client, book_info)
+            cluster_summaries = await async_map_with_tqdm(
+                sum_func, clusters.values(), "Generating group summary"
             )
+            total_summary = await sum_func(cluster_summaries)
+            # Note: samples without labels are treated as group0
+            summary = "\n".join(
+                f"Group {i}: {s}" for i, s in enumerate(cluster_summaries)
+            )
+            summary += f"Total summary: {total_summary}"
 
         else:
-            return summary
+            summary = await summarize_group(llm_client, book_info, review_list)
 
-    logger.info("Generating summary...")
+        return summary
 
-    if cfg.clustering:
-        cluster_labels = await cluster_reviews(cfg, llm_client, review_list)
-        clusters = defaultdict(list)
-        for review, label in zip(review_list, cluster_labels):
-            clusters[label].append(review)
-        clusters = dict(sorted(clusters.items(), key=lambda x: x[0]))
-
-        sum_func = partial(summarize_group, llm_client, book_info)
-        cluster_summaries = await async_map_with_tqdm(
-            sum_func, clusters.values(), "Generating group summary"
-        )
-        total_summary = await sum_func(cluster_summaries)
-        # Note: samples without labels are treated as group0
-        summary = "\n".join(f"Group {i}: {s}" for i, s in enumerate(cluster_summaries))
-        summary += f"Total summary: {total_summary}"
-
-    else:
-        summary = await summarize_group(llm_client, book_info, review_list)
-
-    if cfg.save_tmp:
-        save_text(summary, os.path.join(cfg.rating_tmp_dir, f"summary.txt"))
-    return summary
+    cache_path = os.path.join(get_save_dir(cfg), "summary.txt")
+    return await async_use_cache_or_compute(
+        cfg, cache_path, load_text, compute, save_text
+    )
 
 
 async def translate_summary(cfg, llm_client, summary):
-    if cfg.use_tmp:
-        try:
-            tranlated = load_text(os.path.join(cfg.rating_tmp_dir, f"translated.txt"))
-        except:
-            logger.warning(
-                f"Failed to load tmp files of translate_summary, reprocessing."
-            )
+    async def compute():
+        logger.info("Translating summary...")
+        if cfg.language == DEFAULT_LANGUAGE:
+            return summary
         else:
-            return tranlated
-
-    logger.info("Translating summary...")
-    if cfg.language == DEFAULT_LANGUAGE:
-        return summary
-    else:
-        prompt = TRANSLATE_PROMPT.format(language=cfg.language, book_summary=summary)
-        tranlated = await llm_client.chat(prompt)
-        if cfg.save_tmp:
-            save_text(
-                tranlated,
-                os.path.join(cfg.rating_tmp_dir, f"translated.txt"),
+            prompt = TRANSLATE_PROMPT.format(
+                language=cfg.language, book_summary=summary
             )
-    return tranlated
+            tranlated = await llm_client.chat(prompt)
+
+        return tranlated
+
+    cache_path = os.path.join(get_save_dir(cfg), "translated.txt")
+    return await async_use_cache_or_compute(
+        cfg, cache_path, load_text, compute, save_text
+    )
+
+
+async def summary_pipeline(cfg, llm_client, book_info, reviews):
+    summary = await generate_summary(cfg, llm_client, book_info, reviews)
+    tranlated_summary = await translate_summary(cfg, llm_client, summary)
+    save_text(
+        tranlated_summary,
+        os.path.join(get_save_dir(cfg, "result"), f"summarized_result.txt"),
+    )
 
 
 async def main(cfg):
 
     with open(cfg.books, "r") as f:
-        book_pages = f.read().splitlines()
+        book_infos = f.read().splitlines()
 
     llm_client = build_llm_client(cfg.client)
-    for page in tqdm(book_pages, desc="Books"):
-        logger.info(f"Processing book: {page}")
-        cfg.book_dir = os.path.join(cfg.output_dir, page)
+    for info in tqdm(book_infos, desc="Books"):
+        platform, book_dir, book_id = info.split(",")
+        cfg.book_dir = os.path.join(cfg.output_dir, book_dir)
         make_dir_if_not_exists(cfg.book_dir)
         if cfg.save_tmp:
             cfg.tmp_dir = os.path.join(cfg.book_dir, "tmp")
             make_dir_if_not_exists(cfg.tmp_dir)
 
-        book_info, review_request = await get_page(cfg, page)
-        if review_request:
-            for rating in range(5, 0, -1):
-                cfg.rating_dir = os.path.join(cfg.book_dir, f"rating_{rating}")
-                make_dir_if_not_exists(cfg.rating_dir)
-                if cfg.save_tmp:
-                    cfg.rating_tmp_dir = os.path.join(cfg.tmp_dir, f"rating_{rating}")
-                    make_dir_if_not_exists(cfg.rating_tmp_dir)
+        with get_platform(cfg, platform) as platform:
+            book_info = platform.get_book_info(book_id)
+            reviews = platform.get_reviews(book_id)
 
-                logger.info(f"Processing rating: {rating}")
-                review_df = get_reviews(cfg, review_request, rating)
-                filtered_reviews = await filter_reviews(
-                    cfg, llm_client, book_info, review_df
-                )
-                if len(filtered_reviews):
-                    digested_reviews = await digest_reviews(
-                        cfg, llm_client, book_info, filtered_reviews
-                    )
-                    summary = await generate_summary(
-                        cfg, llm_client, book_info, digested_reviews
-                    )
-                    tranlated_summary = await translate_summary(
-                        cfg, llm_client, summary
-                    )
-                    save_text(
-                        tranlated_summary,
-                        os.path.join(cfg.rating_dir, f"summary.txt"),
-                    )
-                else:
-                    logger.warning(f"No reviews found for rating: {rating}")
+        filtered_reviews = await filter_reviews(cfg, llm_client, book_info, reviews)
+        digested_reviews = await digest_reviews(
+            cfg, llm_client, book_info, filtered_reviews
+        )
+
+        if not digested_reviews.empty:
+            if cfg.summary_mode == "rating":
+                rating_max = digested_reviews["rating"].max()
+                for rating in range(rating_max, -1, -1):
+                    cfg.rating_dir = os.path.join(cfg.book_dir, f"rating_{rating}")
+                    make_dir_if_not_exists(cfg.rating_dir)
+                    if cfg.save_tmp:
+                        cfg.rating_tmp_dir = os.path.join(
+                            cfg.tmp_dir, f"rating_{rating}"
+                        )
+                        make_dir_if_not_exists(cfg.rating_tmp_dir)
+                    select_reviews = digested_reviews[
+                        (digested_reviews["rating"] >= rating)
+                        & (digested_reviews["rating"] < rating + 1)
+                    ]
+                    if not select_reviews.empty:
+                        select_list = select_reviews["review"].to_list()
+                        await summary_pipeline(cfg, llm_client, book_info, select_list)
+                    else:
+                        logger.warning(
+                            f"No insightful reviews found for rating: {rating}"
+                        )
+            else:
+                digested_list = digested_reviews["review"].to_list()
+                await summary_pipeline(cfg, llm_client, book_info, digested_list)
         else:
-            logger.warning("No reviews found for this book")
+            logger.warning("No insightful reviews found for this book")
 
     logger.info("Done!")
 
@@ -333,12 +179,14 @@ async def main(cfg):
 def parse_config():
     load_dotenv()
     cfg = OmegaConf.load("configs/main.yaml")
-    client_cfg = OmegaConf.load(os.path.join(f"configs/clients/{cfg.client}"))
-    cfg.client = client_cfg
+    cfg.client = OmegaConf.load(os.path.join(f"configs/clients/{cfg.client}"))
+    cfg.platform = OmegaConf.load(os.path.join(f"configs/{cfg.platform}"))
 
     return cfg
 
 
 if __name__ == "__main__":
     cfg = parse_config()
-    asyncio.run(main(cfg))
+    # fix new line promblem
+    with logging_redirect_tqdm():
+        asyncio.run(main(cfg))

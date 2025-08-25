@@ -1,2 +1,3 @@
-40121378-atomic-habits
-11468377-thinking-fast-and-slow
+storygraph,atomic_habbit_storygraph,7595d6e0-b75d-4f37-9226-50d5a73851df
+goodreads,atomic_habbit_goodreads,40121378-atomic-habits
+goodreads,thinking_fast_and_slow,11468377-thinking-fast-and-slow

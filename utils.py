@@ -1,6 +1,5 @@
 import json
 import csv
-from types import SimpleNamespace
 import pandas as pd
 from tqdm.asyncio import tqdm_asyncio
 import os
@@ -17,6 +16,13 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger()
 
 
+def get_save_dir(cfg, save_type="tmp"):
+    if save_type == "tmp":
+        return cfg.tmp_dir if cfg.summary_mode == "total" else cfg.rating_tmp_dir
+    else:
+        return cfg.book_dir if cfg.summary_mode == "total" else cfg.rating_dir
+
+
 async def async_map_with_tqdm(func, iterable, desc=""):
     return await tqdm_asyncio.gather(*(func(item) for item in iterable), desc=desc)
 
@@ -26,24 +32,59 @@ def make_dir_if_not_exists(dir_path):
         os.makedirs(dir_path)
 
 
-def save_request(request, output_file):
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "url": request.url,
-                "headers": request.headers,
-                "post_data_json": request.post_data_json,
-            },
-            f,
-            ensure_ascii=False,
-            indent=4,
-        )
+def try_load_cache(cfg, loader, cache_path):
+    if cfg["use_tmp"]:
+        try:
+            return loader(cache_path)
+        except:
+            logger.warning(f"Failed to load tmp file {cache_path}. Reprocessing.")
+    return None
 
 
-def load_request(input_file):
-    with open(input_file, "r", encoding="utf-8") as f:
-        request_dict = json.load(f)
-    return SimpleNamespace(**request_dict)
+def maybe_save_cache(cfg, saver, result, cache_path):
+    if cfg["save_tmp"]:
+        if saver is not None:
+            try:
+                saver(result, cache_path)
+            except Exception as e:
+                logger.error(f"Failed to save tmp file {cache_path}")
+                raise e
+
+
+def sync_use_cache_or_compute(
+    cfg,
+    cache_path,
+    loader,
+    compute,
+    saver,
+):
+
+    cached = try_load_cache(cfg, loader, cache_path)
+    if cached is not None:
+        return cached
+
+    result = compute()
+    maybe_save_cache(cfg, saver, result, cache_path)
+
+    return result
+
+
+async def async_use_cache_or_compute(
+    cfg,
+    cache_path,
+    loader,
+    compute,
+    saver,
+):
+
+    cached = try_load_cache(cfg, loader, cache_path)
+    if cached is not None:
+        return cached
+
+    result = await compute()
+    maybe_save_cache(cfg, saver, result, cache_path)
+
+    return result
 
 
 def save_text(text, output_file):
@@ -64,6 +105,14 @@ def save_json(data, output_file):
 def load_json(input_file):
     with open(input_file, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def save_npy(arr, file_path):
+    np.save(file_path, arr)
+
+
+def load_npy(file_path):
+    np.load(file_path)
 
 
 def save_df(df, output_file):
@@ -97,28 +146,25 @@ async def summarize_group(llm_client, book_info, review_list):
 
 
 async def embed_reviews(cfg, llm_client, review_list):
-    if cfg.use_tmp:
-        try:
-            embeddings = np.load(os.path.join(cfg.rating_tmp_dir, f"embeddings.npy"))
-        except:
-            logger.warning(f"Failed to load embedding, reprocessing.")
-        else:
-            return embeddings
-    total_len = len(review_list)
-    batch_size = cfg.client.embed_batch_size
+    async def compute():
+        total_len = len(review_list)
+        batch_size = cfg.client.embed_batch_size
 
-    batch_list = []
-    for i in range(0, total_len, batch_size):
-        batch = review_list[i : i + batch_size]
-        batch_list.append(batch)
+        batch_list = []
+        for i in range(0, total_len, batch_size):
+            batch = review_list[i : i + batch_size]
+            batch_list.append(batch)
 
-    embeddings_list = await async_map_with_tqdm(llm_client.embed, batch_list, "Embed")
-    embeddings = np.concatenate(embeddings_list, axis=0)
+        embeddings_list = await async_map_with_tqdm(
+            llm_client.embed, batch_list, "Embed"
+        )
+        embeddings = np.concatenate(embeddings_list, axis=0)
+        return embeddings
 
-    if cfg.save_tmp:
-        np.save(os.path.join(cfg.rating_tmp_dir, f"embeddings.npy"), embeddings)
-
-    return embeddings
+    cache_path = os.path.join(get_save_dir(cfg), "embedding.npy")
+    return await async_use_cache_or_compute(
+        cfg, cache_path, load_npy, compute, save_npy
+    )
 
 
 def visualize_umap(cfg, embeddings, labels):
@@ -142,49 +188,53 @@ def visualize_umap(cfg, embeddings, labels):
             coords[mask_noise, 1],
             s=10,
             alpha=0.4,
-            label="single",
+            label="cluster 0 (single)",
             c="lightgray",
         )
     for lab in np.unique(labels):
         if lab == -1:
             continue
         m = labels == lab
-        plt.scatter(coords[m, 0], coords[m, 1], s=12, alpha=0.8, label=f"cluster {lab}")
+        plt.scatter(
+            coords[m, 0], coords[m, 1], s=10, alpha=0.8, label=f"cluster {lab+1}"
+        )
     plt.legend(markerscale=2, fontsize=8, loc="best")
 
     plt.title(f"UMAP visualization")
     plt.tight_layout()
-    plt.savefig(os.path.join(cfg.rating_dir, f"cluster.png"), dpi=150)
+    plt.savefig(os.path.join(get_save_dir(cfg, "result"), f"cluster.png"), dpi=150)
     return coords
 
 
 async def cluster_reviews(cfg, llm_client, review_list):
     embeddings = await embed_reviews(cfg, llm_client, review_list)
 
-    if cfg.use_tmp:
-        try:
-            labels = np.load(os.path.join(cfg.rating_tmp_dir, f"labels.npy"))
-        except:
-            logger.warning("Failed to load cluserting labels, reprocessing.")
-        else:
-            return labels
+    def compute():
 
-    # dimension reduction
-    pca = PCA(n_components=cfg.pca.n_components, random_state=cfg.seed)
-    X_reduced = pca.fit_transform(embeddings)
+        # dimension reduction
+        min_components = min(embeddings.shape[0], embeddings.shape[1])
+        n_components = cfg.pca.n_components
+        if n_components > min_components:
+            n_components = min_components
+            logger.warning(
+                " must be between 0 and min(n_samples, n_features) with svd_solver='full', force set to reasonable value"
+            )
+        pca = PCA(n_components=n_components, random_state=cfg.seed)
+        X_reduced = pca.fit_transform(embeddings)
 
-    # clustering
-    clusterer = HDBSCAN(
-        min_cluster_size=cfg.hdbscan.min_cluster_size,
-        min_samples=cfg.hdbscan.min_samples,
-        metric=cfg.hdbscan.metric,
-    )
-    labels = clusterer.fit_predict(X_reduced)
+        # clustering
+        clusterer = HDBSCAN(
+            min_cluster_size=cfg.hdbscan.min_cluster_size,
+            min_samples=cfg.hdbscan.min_samples,
+            metric=cfg.hdbscan.metric,
+        )
+        labels = clusterer.fit_predict(X_reduced)
+        return labels
+
+    cache_path = os.path.join(get_save_dir(cfg), "labels.npy")
+    labels = sync_use_cache_or_compute(cfg, cache_path, load_npy, compute, save_npy)
 
     if cfg.viz_clusters:
         visualize_umap(cfg, embeddings, labels)
-
-    if cfg.save_tmp:
-        np.save(os.path.join(cfg.rating_tmp_dir, f"labels.npy"), labels)
 
     return labels

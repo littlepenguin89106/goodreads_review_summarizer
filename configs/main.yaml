@@ -2,16 +2,14 @@
 books: books.txt
 # client config in configs/clients
 client: ollama.yaml
-# Number of reviews to request per chunk
-reviews_per_chunk: 100
-# Maximum number of reviews to scrape per book for each star rating
-max_reviews: 100
-# Interval between requests to the Goodreads API in seconds
-interval: 2
+# settings for scrapping the book platforms
+platform: platform.yaml
 # output language of the final summary
 language: English
 # The directory to save the output
 output_dir: ./output
+# set to "total" to generate one summary for all ratings, or "rating" to generate separate summaries for each rating
+summary_mode: total
 # Save intermediate data
 save_tmp: false
 # Use intermediate data

@@ -1,52 +1,60 @@
-# Goodreads Review Summarizer
+# Book Review Summarizer
 
 ## Overview
 
-Goodreads Review Summarizer is a tool to collect and summarize book reviews from Goodreads. The goal of this project is to extract insights from multiple user reviews, providing a informative summary of a book's reception.
+Book Review Summarizer is a tool to collect and summarize book reviews from the online review platforms. The goal of this project is to extract insights from multiple user reviews, providing a informative summary of a book's reception.
 
 ## Features
 
-- Scrapes and summarizes book reviews from Goodreads
-- Output the structured summaries by LLM to help users make informed reading choices
+- Scrapes and summarizes book reviews online review platform.
+- Output the structured summaries by LLM to help users make informed reading choices.
 - Clustering and Visualize the reviews per rating. See [Clustering](#clustering).
 - Support running LLMs locally or calling online APIs.
+- Support collecting reviews from Goodreads and The StoryGraph.
 
 ## Installation
 
 1. Ensure you have Python3 installed. This project was developed using Python 3.10.
-2. Run `pip install -r requirements.txt`
-3. Run `playwright install` for installing playwright dependencies.
-4. Choose one of [Supported APIs](#supported-apis) you prefer.
+2. Run `pip install -r requirements.txt`.
+3. Choose one of [Supported APIs](#supported-apis) you prefer.
 
 ## Supported APIs
 
 ### Ollama
 1. Install and run [Ollama](https://ollama.com/), and make sure it keeps running in the background.
-2. Run `ollama pull qwen3:0.6b`
+2. Run `ollama pull qwen3:0.6b`.
 3. (Optional) To use clustering:
     - download [Qwen3-Embedding](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf?download=true) save in `./models`. 
-    - In `./models`, run `ollama create qwen3_embed:0.6b -f Modelfile`
+    - In `./models`, run `ollama create qwen3_embed:0.6b -f Modelfile`.
 
 ### OpenAI-Compatible
 You can configure the settings for any OpenAI API-compatible service. 
 For example, see `configs/clients/openai.yaml`, which uses OpenAI API to connect Ollama.
 
-You can use dotenv to manage environment variables. Create a `.env` file in the project’s root directory and add your API key, for example: `OPENAI_API_KEY="your_api_key"`. The program will load these settings.
+> [!TIP]
+> You can use dotenv to manage environment variables. Create a `.env` file in the project’s root directory and add your API key, for example: `OPENAI_API_KEY="your_api_key"`. The tool will load these settings.
 
 ## Usage
 
-1. Browse the Goodreads page of the book you're interested in and note its identifier.
+1. Checkout the book’s page and find the identifier.
+    - Example on Goodreads: `https://www.goodreads.com/book/show/40121378-atomic-habits` &rarr; the identifier is `40121378`.
+    - Example on The StoryGraph: `https://app.thestorygraph.com/books/7595d6e0-b75d-4f37-9226-50d5a73851df` &rarr; the identifier is `7595d6e0-b75d-4f37-9226-50d5a73851df`.
 
-    For example, the Goodreads page for *Atomic Habits* is:
-    https://www.goodreads.com/book/show/40121378-atomic-habits
+2. put the book information in a text file as following format:
+```
+platform,folder_name,identifier
+```
 
-    In this case, `40121378-atomic-habits` is the identifier you need.
+> [!IMPORTANT]  
+> For the same book on different platforms, use unique folder names (e.g., `bookname_goodreads`, `bookname_storygraph`). Otherwise, the previous result will be overwritten.
 
-2. Copy and paste the book identifier into a text file. This tool supports multiple books, so you can enter multiple identifiers, each on a new line.
-
-    Refer to `books.txt` for an example.
+This tool supports multiple books. Enter each book on a new line.
+By default, the tools reads `books.txt`. You can use it as a reference and edit it directly.
 
 3. Adjust `configs/main.yaml`. For more detail, please read the comments in the configurations.
+
+> [!TIP]  
+> The default config uses a small local model and loosely defined parameters. To achieve better performance and results, the config should be adjusted—such as selecting a more advanced model, switching to a different LLM API, or fine-tuning clustering parameters.
 
 4. Execute `python main.py`.
 5. The results will be saved in the `output/` by default.
@@ -54,14 +62,14 @@ You can use dotenv to manage environment variables. Create a `.env` file in the 
 ## Clustering
 - Enable clustering by setting `clustering: true` in `configs/main.yaml`.
 - Reviews are processed by generating text embeddings, reducing their dimensions with PCA, and clustering them using HDBSCAN.
-- For each cluster, the program generates a summary, followed by an overall summary across all clusters. 
+- For each cluster, the tool generates a summary, followed by an overall summary across all clusters.
 - Reviews without cluster labels are grouped and summarized separately.
 - Enable visualizing by setting `viz_clusters: true` in `configs/main.yaml`. It uses UMAP for visualization.
 
 ## Notices
 
-- Obtaining Goodreads reviews is not through an officially public API. Please be mindful of the frequency of requests and the amount of data being retrieved.
-- Summary is generated by LLM, please verify the generated content
+- Obtaining reviews is not through an officially public APIs. Please be mindful of the frequency of requests and the amount of data being retrieved.
+- Summary is generated by LLM, please verify the generated content.
 
 ## Planned Features
 

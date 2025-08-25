@@ -1,0 +1,16 @@
+goodreads:
+  # maximum number of reviews per book, behavior follows limit_by
+  max_reviews: 100
+  # "total" = total reviews, "rating" = per rating
+  limit_by: total
+  # Number of reviews to request per chunk
+  reviews_per_request: 100
+  # Interval between requests to the Goodreads API in seconds
+  interval: 2
+storygraph:
+  # Maximum number of reviews to scrape per book
+  # Note: The StoryGraph does not support rating filtering
+  max_reviews: 100
+  limit_by: total
+  # Interval between requests to the Goodreads API in seconds
+  interval: 2
